@@ -265,6 +265,12 @@ Other planner rules:
 - `$user_id` switches to the owner scope.
 - A collection query without `access_level` means "every level I can read": one range per level the
   collection actually uses, up to the caller's level, merged in order.
+- A reference query follows one rule, decided once per query (`ref_access`): the referenced record's uploader and
+  the users granted it read every record pointing to it, so they get every level the collection uses (an agent
+  key's `max_level` still applies), the `**` scope unfiltered, and `collection.subscription` without subscribing.
+  Anyone else gets the levels up to their own and no `**` scope at all (no per-record filtering), and an explicit
+  `**` or higher level with a reference is refused. `can_read` matches: a subscription record reached by reference
+  needs no subscription.
 - Each candidate's metadata is loaded for the final access check (private records, agent key limits), the
   same load that returns it.
 - `ascending: false` uses reverse iterators.
@@ -326,7 +332,8 @@ reference, no unique id, not an update) are saved together, up to 1,000 per writ
 - records at levels up to their own
 - their own `**` records
 - `**` records they were granted
-- a `**` record reached by reference, when they uploaded or were granted the referenced record
+- a record reached by reference (any level, `**` and subscription records included), when they uploaded or were
+  granted the referenced record
 - a `**` record they hold a private access key for
 
 **Writes.**

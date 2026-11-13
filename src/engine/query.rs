@@ -1,6 +1,6 @@
 //! getRecords: one scope + one sort -> key ranges, merged across access levels (ARCHITECTURE.md, "Query views").
 
-use super::access::{can_read, is_active_subscriber, parse_level, Caller};
+use super::access::{can_read, is_active_subscriber, is_granted, parse_level, Caller};
 use super::json::*;
 use super::write::{norm_cond, record_by_id, record_by_unique_id, resolve_record_id};
 use super::Db;
@@ -301,8 +301,17 @@ pub fn get_records(db: &Db, c: &Caller, body: &Value) -> ApiResult<Value> {
             index = None;
         }
     }
+    // The reference rule (as in skapi): the user who uploaded the referenced record, and the users it
+    // was shared with, have every right to read the records that reference it: every level the
+    // collection uses, every private record, every subscription record. Anyone else reads levels up
+    // to their own, no private records (not even their own), and subscription records only as a
+    // subscriber. Decided once here, so the scopes below need no per-record filtering for it.
+    let ref_access = view == V_REF && (c.admin || {
+        let mine = db.load_meta(&owner)?.map(|tm| tm.user_id == c.user_id).unwrap_or(false);
+        mine || is_granted(db, &owner, &c.user_id)?
+    });
     let sub = sub.unwrap_or_default();
-    if !sub.is_empty() && !c.admin && sub != c.user_id && !is_active_subscriber(db, &sub, &c.user_id)? {
+    if !sub.is_empty() && !c.admin && !ref_access && sub != c.user_id && !is_active_subscriber(db, &sub, &c.user_id)? {
         return Err(ApiError::denied(format!("These are subscription records of user {sub}; subscribe to them first.")));
     }
 
@@ -321,23 +330,47 @@ pub fn get_records(db: &Db, c: &Caller, body: &Value) -> ApiResult<Value> {
         } else if c.private_ok() {
             if view == V_COLL {
                 out.push(mk(V_PRIV, &c.user_id, "**"));
+            } else if view == V_REF {
+                // private records referencing a record: only with access to that record
+                if ref_access {
+                    out.push(mk(view, &owner, "**"));
+                }
             } else {
                 out.push(mk(view, &owner, "**"));
             }
         }
     };
+    let no_ref_access = || {
+        ApiError::denied(format!(
+            "You have no private access to record {owner}: only its uploader and the users it was shared with read the private records, and the records above their level, that reference it."
+        ))
+    };
     let mut scopes = vec![];
+    // levels a reference reader with access to the referenced record may see: every one (an agent
+    // key still narrows it to its max_level); anyone else: up to their own
+    let top = if ref_access {
+        c.agent.as_ref().and_then(|a| a.max_level).unwrap_or(99)
+    } else {
+        c.eff_level()
+    };
     match &level {
         Some(l) if l == "**" => {
             if !c.private_ok() {
                 return Err(ApiError::denied("This agent key cannot read private (**) records."));
             }
+            if view == V_REF && !ref_access && !c.admin {
+                return Err(no_ref_access());
+            }
             private_scope(&mut scopes);
         }
-        Some(l) => scopes.push(mk(view, &owner, l)),
+        Some(l) => {
+            if view == V_REF && !c.admin && l.parse::<u8>().is_ok_and(|n| n > top) {
+                return Err(no_ref_access());
+            }
+            scopes.push(mk(view, &owner, l))
+        }
         None => {
-            // only the levels this collection uses (see catalog::k_level), up to the caller's own
-            let top = c.eff_level();
+            // only the levels this collection uses (see catalog::k_level), up to `top`
             for l in super::catalog::levels(db, &coll)? {
                 if l.parse::<u8>().is_ok_and(|n| n <= top) {
                     scopes.push(mk(view, &owner, &l));

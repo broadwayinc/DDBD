@@ -151,7 +151,12 @@ pub fn can_read(db: &Db, c: &Caller, id: &str, m: &Meta, private_key: Option<&st
         return Ok(false);
     }
     if !own && m.sub.is_subscription_record && !is_active_subscriber(db, &m.user_id, &c.user_id)? {
-        return Ok(false);
+        // the uploader of the record this one references, and the users it was shared with, read
+        // every record that references it, subscription records included
+        if !reach_by_reference(db, c, m)? {
+            return Ok(false);
+        }
+        return Ok(true);
     }
     if own {
         return Ok(true);
