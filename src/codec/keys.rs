@@ -18,7 +18,7 @@ pub const V_COLL: u8 = b'C';
 pub const V_USER: u8 = b'U';
 pub const V_REF: u8 = b'R';
 pub const V_PRIV: u8 = b'P';
-pub const V_REFBY: u8 = b'X'; // X target \0 user \0 record_id : who references what
+pub const V_REFBY: u8 = b'X'; // X target \0 user \0 collection \0 level \0 sub \0 record_id : who references what, where
 pub const V_OWNER: u8 = b'O'; // O user \0 record_id : one key per record, for listings and user deletion
 
 // sort bytes
@@ -179,7 +179,27 @@ pub fn refby_prefix(target: &str) -> Vec<u8> {
     k
 }
 
-pub fn refby_key(target: &str, user: &str, record_id: &str) -> Vec<u8> {
+/// `X target \0 user \0 collection \0 level \0 sub \0` : one user's records pointing to `target`, in one
+/// collection and level (`sub` = the uploader for subscription records, empty otherwise). Every prefix
+/// of it is a range: the target alone (cascade, counts), the target and the user (one reference per
+/// user), and down to a level (a reference read of one user's records).
+pub fn refby_range(target: &str, user: &str, coll: &str, lvl: &str, sub: &str) -> Vec<u8> {
+    let mut k = refby_prefix(target);
+    push_comp(&mut k, user);
+    push_comp(&mut k, coll);
+    push_comp(&mut k, lvl);
+    push_comp(&mut k, sub);
+    k
+}
+
+pub fn refby_key(target: &str, user: &str, coll: &str, lvl: &str, sub: &str, record_id: &str) -> Vec<u8> {
+    let mut k = refby_range(target, user, coll, lvl, sub);
+    k.extend_from_slice(record_id.as_bytes());
+    k
+}
+
+/// The key before refby_v2 (`X target \0 user \0 record_id`), only to clear it on upgrade.
+pub fn refby_key_v1(target: &str, user: &str, record_id: &str) -> Vec<u8> {
     let mut k = refby_prefix(target);
     push_comp(&mut k, user);
     k.extend_from_slice(record_id.as_bytes());

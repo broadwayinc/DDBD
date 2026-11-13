@@ -293,11 +293,18 @@ pub fn get_records(db: &Db, c: &Caller, body: &Value) -> ApiResult<Value> {
         }
         Some(_) => return Err(ApiError::invalid("query.reference must be a record id, unique id, or {user_id}.")),
     }
+    // $user_id: one user's records. With a record reference it is "that user's records pointing to the
+    // target", read from the refby keys (X target user collection level sub); the reference is kept.
+    let mut ref_user: Option<String> = None;
     if let Some(ix) = &index {
         if ix.name == "$user_id" {
             let Some(Val::Str(u)) = &ix.value else { return Err(ApiError::invalid("$user_id takes a user id.")) };
-            view = V_USER;
-            owner = u.clone();
+            if view == V_REF {
+                ref_user = Some(u.clone());
+            } else {
+                view = V_USER;
+                owner = u.clone();
+            }
             index = None;
         }
     }
@@ -353,6 +360,66 @@ pub fn get_records(db: &Db, c: &Caller, body: &Value) -> ApiResult<Value> {
     } else {
         c.eff_level()
     };
+    if let Some(u) = ref_user {
+        // One user's records pointing to the target, as exact ranges (no per-record filtering): the user
+        // themself, and whoever may read every record pointing to the target, get every level, "**" and
+        // (with collection.subscription naming the user) the user's subscription records; anyone else the
+        // levels up to their own, and subscription records only as the user's subscriber.
+        let full = c.admin || u == c.user_id || ref_access;
+        let cap = if full { c.agent.as_ref().and_then(|a| a.max_level).unwrap_or(99) } else { c.eff_level() };
+        let mut levels: Vec<String> = vec![];
+        match &level {
+            Some(l) if l == "**" => {
+                if !c.private_ok() {
+                    return Err(ApiError::denied("This agent key cannot read private (**) records."));
+                }
+                if !full {
+                    return Err(no_ref_access());
+                }
+                levels.push("**".into());
+            }
+            Some(l) => {
+                if !full && l.parse::<u8>().is_ok_and(|n| n > cap) {
+                    return Err(no_ref_access());
+                }
+                levels.push(l.clone());
+            }
+            None => {
+                for l in super::catalog::levels(db, &coll)? {
+                    if l.parse::<u8>().is_ok_and(|n| n <= cap) {
+                        levels.push(l);
+                    }
+                }
+                if full && c.private_ok() {
+                    levels.push("**".into());
+                }
+            }
+        }
+        // subscription records are listed only when collection.subscription names their uploader
+        let subs: Vec<&str> = if sub.is_empty() {
+            vec![""]
+        } else if sub == u {
+            vec![u.as_str()]
+        } else {
+            vec![]
+        };
+        let mut bases = vec![];
+        for l in &levels {
+            for s in &subs {
+                bases.push(refby_range(&owner, &u, &coll, l, s));
+            }
+        }
+        let plan = Plan { ranges: vec![(vec![], vec![END])], dedup: None };
+        let (list, cursor, end) = run(db, &bases, &plan, f.ascending, f.limit, f.start_key.as_deref(), |id, m| {
+            // a tag is not part of the refby key: it is the one condition checked on the record
+            if !tag.is_empty() && !m.tags.iter().any(|t| t == &tag) {
+                return Ok(false);
+            }
+            can_read(db, c, id, m, private_key)
+        })?;
+        return Ok(page(list, cursor, end));
+    }
+
     match &level {
         Some(l) if l == "**" => {
             if !c.private_ok() {
@@ -392,16 +459,18 @@ pub fn get_records(db: &Db, c: &Caller, body: &Value) -> ApiResult<Value> {
         },
     };
 
-    let (list, cursor, end) = run(db, &scopes, &plan, f.ascending, f.limit, f.start_key.as_deref(), |id, m| {
+    let bases: Vec<Vec<u8>> = scopes.iter().map(|s| s.bytes()).collect();
+    let (list, cursor, end) = run(db, &bases, &plan, f.ascending, f.limit, f.start_key.as_deref(), |id, m| {
         can_read(db, c, id, m, private_key)
     })?;
     Ok(page(list, cursor, end))
 }
 
-/// Scans the ranges in every scope, merges them in order, and returns one page.
+/// Scans the ranges under every base key (a scope, or a refby range), merges them in order, and
+/// returns one page.
 fn run(
     db: &Db,
-    scopes: &[Scope],
+    bases: &[Vec<u8>],
     plan: &Plan,
     asc: bool,
     limit: usize,
@@ -412,8 +481,8 @@ fn run(
     let snap = store.db.snapshot();
     let cf = store.cf(CF_IX);
     let mut srcs = vec![];
-    for s in scopes {
-        let sb = s.bytes();
+    for sb in bases {
+        let sb = sb.clone();
         for (lo, hi) in &plan.ranges {
             let mut l = cat(&sb, lo);
             let mut h = cat(&sb, hi);

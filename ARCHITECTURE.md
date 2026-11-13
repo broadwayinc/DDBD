@@ -248,6 +248,14 @@ uploader and of each granted user, with every index sort, so a granted user can 
 private collection. Granting or revoking writes or deletes that user's keys in the grant call itself, so
 access starts or ends the moment the call returns.
 
+**Refby keys.** Every record that points to another one also writes
+`X <target> \0 <user> \0 <collection> \0 <level> \0 <sub> \0 <record_id>` (`sub` = the uploader for a
+subscription record, empty otherwise). Each prefix is a range: the target alone (the delete cascade, the count
+on import), the target and the user (one reference per user), and down to a level (a `$user_id` + reference
+read, with no record read and dropped). A move to another collection or level rewrites it with the other view
+keys. Folders made before it are rebuilt once at start (`meta` `refby_v2`); the key used to be
+`X <target> \0 <user> \0 <record_id>`.
+
 **Query planner** (`query.rs`). A request maps to one scope and one sort, then ranges:
 
 | condition | range |
@@ -262,7 +270,10 @@ access starts or ends the moment the call returns.
 | any of the above + `match: "loose"` | the same range on `l` (`m` for ends with), or on `k` / `n` for initials |
 
 Other planner rules:
-- `$user_id` switches to the owner scope.
+- `$user_id` switches to the owner scope. With a record `reference` it keeps the reference and reads that
+  user's refby ranges instead (below): exact ranges per level (and `sub`), merged in upload order; only a `tag`
+  is checked on the record. The user themself, and whoever may read every record pointing to the target, get
+  every level and `**`; anyone else the levels up to their own.
 - A collection query without `access_level` means "every level I can read": one range per level the
   collection actually uses, up to the caller's level, merged in order.
 - A reference query follows one rule, decided once per query (`ref_access`): the referenced record's uploader and

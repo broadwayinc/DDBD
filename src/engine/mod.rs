@@ -141,6 +141,11 @@ impl Db {
             users::reindex_users(&db).map_err(|e| e.message)?;
             db.store.put(CF_META, b"user_index_v1", b"1").map_err(|e| e.message)?;
         }
+        // refby keys carry collection, level and sub since refby_v2 ($user_id + reference reads)
+        if db.store.get(CF_META, b"refby_v2").map_err(|e| e.message)?.is_none() {
+            views::rebuild_refby_keys(&db).map_err(|e| e.message)?;
+            db.store.put(CF_META, b"refby_v2", b"1").map_err(|e| e.message)?;
+        }
         Ok(db)
     }
 

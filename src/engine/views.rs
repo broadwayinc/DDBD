@@ -92,7 +92,7 @@ pub fn record_keys(id: &str, m: &Meta, grantees: &[String]) -> BTreeSet<Vec<u8>>
     }
     keys.insert(owner_key(&m.user_id, id));
     if let Some(r) = &m.reference {
-        keys.insert(refby_key(r, &m.user_id, id));
+        keys.insert(refby_key(r, &m.user_id, &m.collection, &m.level, m.sub_owner(), id));
     }
     keys
 }
@@ -131,4 +131,32 @@ pub fn grantee_keys(id: &str, m: &Meta, grantee: &str) -> BTreeSet<Vec<u8>> {
 pub fn refcount_keys(id: &str, m: &Meta, grantees: &[String], count: u64) -> Vec<Vec<u8>> {
     let so = sort_u64(S_REFD, count);
     tagged_scopes(m, grantees).iter().map(|s| cat(&cat(&s.bytes(), &so), id.as_bytes())).collect()
+}
+
+/// Rewrites every `X` (refby) key in the layout of refby_v2 (collection, level and sub before the record
+/// id), from the records themselves. Run once at start on a folder made before it (`meta` refby_v2).
+pub fn rebuild_refby_keys(db: &super::Db) -> crate::error::ApiResult<usize> {
+    use crate::store::{Batch, CF_IX, CF_REC};
+    let store = &db.store;
+    let mut wrote = 0usize;
+    let mut todo: Vec<(String, Meta)> = vec![];
+    store.scan(CF_REC, b"", &[END], true, |k, v| {
+        if let Some((m, _)) = crate::codec::body::decode(v) {
+            if m.reference.is_some() {
+                todo.push((String::from_utf8_lossy(k).into_owned(), m));
+            }
+        }
+        true
+    })?;
+    for chunk in todo.chunks(5000) {
+        let mut b = Batch::new(store);
+        for (id, m) in chunk {
+            let r = m.reference.as_deref().unwrap_or("");
+            b.delete(CF_IX, &refby_key_v1(r, &m.user_id, id));
+            b.put(CF_IX, &refby_key(r, &m.user_id, &m.collection, &m.level, m.sub_owner(), id), b"");
+            wrote += 1;
+        }
+        b.commit()?;
+    }
+    Ok(wrote)
 }
