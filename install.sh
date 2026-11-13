@@ -1,12 +1,15 @@
 #!/bin/sh
 # DDBD installer. Served at https://cdn.broadwayinc.com/get/ddbd/v1 and run with:
-#   curl -fsSL https://cdn.broadwayinc.com/get/ddbd/v1 | sh
+#   curl -fsSL https://cdn.broadwayinc.com/get/ddbd/v1 | sudo sh
+#
+# Run as root (with sudo), it installs for everyone in /usr/local/bin. Run as a normal user (`| sh`),
+# it asks sudo for that folder, or uses ~/.local/bin when there is no sudo.
 #
 # It downloads the DDBD build for this machine, checks its SHA-256, and installs the
 # `ddbd` program into /usr/local/bin (with sudo when needed), or into ~/.local/bin when
 # that is not possible. The license files go to <prefix>/share/doc/ddbd.
 #
-# Optional settings, given as environment variables to `sh`:
+# Optional settings, given as environment variables to `sh` (after sudo: `| sudo DDBD_VERSION=0.3.0 sh`):
 #   DDBD_VERSION=0.2.0           install this version instead of the latest one
 #   DDBD_INSTALL_DIR=/some/bin   install the program into this folder
 #   DDBD_BASE_URL=https://...    download from another place (testing a release)
@@ -123,9 +126,10 @@ main() {
            say "  export PATH=\"$bin:\$PATH\"" ;;
     esac
     say ""
-    say "Next, set up a database folder and start the server:"
-    say "  ddbd init --data ~/ddbd-data"
-    say "  ddbd start --data ~/ddbd-data"
+    say "Next, as the user who will run the server (not with sudo), set up a data folder and start it."
+    say "Without --data, both use ddbd-data in that user's home folder (~/ddbd-data):"
+    say "  ddbd init"
+    say "  ddbd start"
     say "Running this command again later updates DDBD to the newest version."
 }
 

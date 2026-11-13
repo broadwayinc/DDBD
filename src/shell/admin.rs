@@ -39,7 +39,7 @@ const HELP: &str = "Admin commands:
   more                                         next page of the last listing
   query '<getRecords JSON>'                    run any query with admin rights
   collections [>= text | <= text | = text]
-  indexes COLLECTION [--order BY] | tags COLLECTION | uniques [>= text | <= text]
+  indexes COLLECTION [--order BY] [--desc] | tags COLLECTION | uniques [>= text | <= text]
   agents [--user NAME] | agent revoke KEY_ID
   status | settings | backup DIR | rebuild-loose | secret rotate
   web-password [--password P]                  turn on the web admin UI (or change its password)
@@ -249,26 +249,26 @@ fn exec(a: &mut Admin, words: &[String]) -> Result<(), String> {
         }
         ["collections", rest @ ..] => {
             let rest: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
-            listing(a, "collections", json!({}), cond_body("collection", &rest), json_out)?;
+            listing(a, "collections", json!({}), json!({"query": cond_body("collection", &rest)}), json_out)?;
         }
         ["tags", coll, rest @ ..] => {
             let rest: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
-            let mut b = cond_body("tag", &rest);
-            b["collection"] = json!(coll);
-            listing(a, "tags", json!({}), b, json_out)?;
+            let mut q = cond_body("tag", &rest);
+            q["collection"] = json!(coll);
+            listing(a, "tags", json!({}), json!({"query": q}), json_out)?;
         }
         ["indexes", coll, rest @ ..] => {
             let rest: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
-            let mut b = cond_body("index", &rest);
-            b["collection"] = json!(coll);
+            let mut q = cond_body("index", &rest);
+            q["collection"] = json!(coll);
             if let Some(by) = args.get("order") {
-                b["order"] = json!({"by": by});
+                q["order"] = json!({"by": by});
             }
-            listing(a, "indexes", json!({}), b, json_out)?;
+            listing(a, "indexes", json!({}), json!({"query": q, "fetch": {"ascending": !args.has("desc")}}), json_out)?;
         }
         ["uniques", rest @ ..] => {
             let rest: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
-            listing(a, "uniques", json!({}), cond_body("unique_id", &rest), json_out)?;
+            listing(a, "uniques", json!({}), json!({"query": cond_body("unique_id", &rest)}), json_out)?;
         }
         ["status"] => {
             let v = a.call(json!({"cmd": "status"}))?;

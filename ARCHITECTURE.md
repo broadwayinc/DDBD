@@ -545,7 +545,7 @@ ddbd debug    <what> ...                                            show how val
 ddbd version
 ```
 
-`--data` defaults to `./ddbd-data`, or `DDBD_DATA`. The data folder is created with mode `0700`.
+`--data` defaults to `DDBD_DATA`, else `~/ddbd-data` (`$HOME/ddbd-data`; `./ddbd-data` only when `HOME` is unset). The data folder is created with mode `0700`.
 
 **Settings** (`ddbd.toml` in the data folder; command-line options override them):
 

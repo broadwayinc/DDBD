@@ -28,7 +28,8 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value = "0.0.0.0")]
         bind: String,
-        #[arg(long, env = "DDBD_DATA", default_value = "./ddbd-data")]
+        /// The data folder (default: ddbd-data in your home folder)
+        #[arg(long, env = "DDBD_DATA", default_value_os_t = default_data())]
         data: PathBuf,
         /// Serve HTTPS itself, with a self-signed certificate made now (default: plain HTTP, for running behind HTTPS)
         #[arg(long)]
@@ -36,12 +37,13 @@ enum Cmd {
     },
     /// Run the server in this terminal
     Start {
-        #[arg(long, env = "DDBD_DATA", default_value = "./ddbd-data")]
+        /// The data folder (default: ddbd-data in your home folder)
+        #[arg(long, env = "DDBD_DATA", default_value_os_t = default_data())]
         data: PathBuf,
-        /// How long missed notifications are kept (30m, 12h, 1d, 7d)
+        /// How long missed notifications are kept: a whole number and ms, s, m, h, d or w (30m, 12h, 1d, 7d)
         #[arg(long)]
         notify_keep: Option<String>,
-        /// How long a private access key works (30m, 1h, 1d)
+        /// How long a private access key works: a whole number and ms, s, m, h, d or w (30m, 1h, 1d)
         #[arg(long)]
         private_key_ttl: Option<String>,
         /// Most indexes per record (0 = unlimited)
@@ -53,17 +55,19 @@ enum Cmd {
     },
     /// Stop the running server cleanly (only the operating system user who runs it)
     Stop {
-        #[arg(long, env = "DDBD_DATA", default_value = "./ddbd-data")]
+        /// The data folder (default: ddbd-data in your home folder)
+        #[arg(long, env = "DDBD_DATA", default_value_os_t = default_data())]
         data: PathBuf,
     },
     /// Stop the running server, then start it again in this terminal (same options as start)
     Restart {
-        #[arg(long, env = "DDBD_DATA", default_value = "./ddbd-data")]
+        /// The data folder (default: ddbd-data in your home folder)
+        #[arg(long, env = "DDBD_DATA", default_value_os_t = default_data())]
         data: PathBuf,
-        /// How long missed notifications are kept (30m, 12h, 1d, 7d)
+        /// How long missed notifications are kept: a whole number and ms, s, m, h, d or w (30m, 12h, 1d, 7d)
         #[arg(long)]
         notify_keep: Option<String>,
-        /// How long a private access key works (30m, 1h, 1d)
+        /// How long a private access key works: a whole number and ms, s, m, h, d or w (30m, 1h, 1d)
         #[arg(long)]
         private_key_ttl: Option<String>,
         /// Most indexes per record (0 = unlimited)
@@ -75,7 +79,8 @@ enum Cmd {
     },
     /// Admin shell over the local socket (or one admin command)
     Admin {
-        #[arg(long, env = "DDBD_DATA", default_value = "./ddbd-data")]
+        /// The data folder (default: ddbd-data in your home folder)
+        #[arg(long, env = "DDBD_DATA", default_value_os_t = default_data())]
         data: PathBuf,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -142,6 +147,16 @@ fn main() {
     }
 }
 
+/// `--data` without a value: `~/ddbd-data`, the same folder whatever folder the command runs in. `ddbd` is
+/// a program on the PATH, so a default relative to the current folder would make a new database wherever
+/// it happened to be run. Without a home folder (`HOME` unset), it falls back to `./ddbd-data`.
+fn default_data() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(h) if !h.is_empty() => PathBuf::from(h).join("ddbd-data"),
+        _ => PathBuf::from("ddbd-data"),
+    }
+}
+
 fn abs(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
@@ -204,8 +219,9 @@ fn start(
         ("private_key_ttl", &cfg.private_key_ttl),
         ("login_max_delay", &cfg.login_max_delay),
     ] {
-        if parse_duration_ms(v).is_none() {
-            return Err(format!("{name} = \"{v}\" is not a duration. Use forms like 30m, 12h, 1d."));
+        // the same rule as the Web Admin's Settings page: a whole number and a unit, above zero
+        if !parse_duration_ms(v).is_some_and(|ms| ms > 0) {
+            return Err(format!("{name} = \"{v}\" is not a duration above zero. Use forms like 30m, 12h, 1d."));
         }
     }
     let tls = if cfg.tls {
