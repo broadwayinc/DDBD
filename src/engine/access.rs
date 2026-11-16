@@ -5,7 +5,7 @@ use super::Db;
 use crate::codec::body::Meta;
 use crate::codec::keys::push_comp;
 use crate::error::{ApiError, ApiResult};
-use crate::store::{CF_ACC, CF_SUB};
+use crate::store::{Batch, CF_ACC, CF_SUB};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -171,7 +171,7 @@ pub fn can_read(db: &Db, c: &Caller, id: &str, m: &Meta, private_key: Option<&st
         return Ok(true);
     }
     if let Some(k) = private_key {
-        if check_private_key(db, k, id, &c.user_id) {
+        if check_private_key(db, k, id, &c.user_id)? {
             return Ok(true);
         }
     }
@@ -192,39 +192,64 @@ pub fn reach_by_reference(db: &Db, c: &Caller, m: &Meta) -> ApiResult<bool> {
 
 type HmacSha = Hmac<Sha256>;
 
-fn key_mac(db: &Db, record_id: &str, user: &str, expiry: u64) -> Vec<u8> {
+/// Key generation row: `g user`. Removing a grant from a user moves their generation on, which cancels
+/// every private access key they were given before (see `bump_key_gen`).
+pub fn key_gen_key(user: &str) -> Vec<u8> {
+    let mut k = vec![b'g'];
+    k.extend_from_slice(user.as_bytes());
+    k
+}
+
+pub fn key_gen(db: &Db, user: &str) -> ApiResult<u64> {
+    Ok(match db.store.get(CF_ACC, &key_gen_key(user))? {
+        Some(v) if v.len() == 8 => u64::from_be_bytes(v.try_into().unwrap()),
+        _ => 0,
+    })
+}
+
+/// Adds the move of `user`'s key generation to the batch, so their private access keys stop working
+/// when it commits.
+pub fn bump_key_gen(db: &Db, b: &mut Batch, user: &str) -> ApiResult<()> {
+    let next = key_gen(db, user)? + 1;
+    b.put(CF_ACC, &key_gen_key(user), &next.to_be_bytes());
+    Ok(())
+}
+
+fn key_hmac(db: &Db, record_id: &str, user: &str, expiry: u64, gen: u64) -> HmacSha {
     let mut mac = <HmacSha as Mac>::new_from_slice(&db.secret()).expect("hmac key");
     mac.update(record_id.as_bytes());
     mac.update(&[0]);
     mac.update(user.as_bytes());
     mac.update(&[0]);
     mac.update(&expiry.to_be_bytes());
-    mac.finalize().into_bytes().to_vec()
-}
-
-/// `hex(expiry) + hex(hmac(secret, record_id \0 user \0 expiry))`
-pub fn make_private_key(db: &Db, record_id: &str, user: &str) -> (String, u64) {
-    let expiry = super::now() + db.cfg().private_key_ttl_ms();
-    (format!("{}{}", hex::encode(expiry.to_be_bytes()), hex::encode(key_mac(db, record_id, user, expiry))), expiry)
-}
-
-pub fn check_private_key(db: &Db, key: &str, record_id: &str, user: &str) -> bool {
-    if key.len() != 16 + 64 {
-        return false;
+    // generation 0 adds nothing, so keys made before generations existed still check
+    if gen > 0 {
+        mac.update(&[0]);
+        mac.update(&gen.to_be_bytes());
     }
-    let Ok(exp) = hex::decode(&key[..16]) else { return false };
+    mac
+}
+
+/// `hex(expiry) + hex(hmac(secret, record_id \0 user \0 expiry [\0 generation]))`
+pub fn make_private_key(db: &Db, record_id: &str, user: &str) -> ApiResult<(String, u64)> {
+    let expiry = super::now() + db.cfg().private_key_ttl_ms();
+    let gen = key_gen(db, user)?;
+    let mac = key_hmac(db, record_id, user, expiry, gen).finalize().into_bytes();
+    Ok((format!("{}{}", hex::encode(expiry.to_be_bytes()), hex::encode(mac)), expiry))
+}
+
+pub fn check_private_key(db: &Db, key: &str, record_id: &str, user: &str) -> ApiResult<bool> {
+    if key.len() != 16 + 64 {
+        return Ok(false);
+    }
+    let Ok(exp) = hex::decode(&key[..16]) else { return Ok(false) };
     let expiry = u64::from_be_bytes(exp.try_into().unwrap());
     if expiry < super::now() {
-        return false;
+        return Ok(false);
     }
-    let Ok(mac) = hex::decode(&key[16..]) else { return false };
-    let mut m = <HmacSha as Mac>::new_from_slice(&db.secret()).expect("hmac key");
-    m.update(record_id.as_bytes());
-    m.update(&[0]);
-    m.update(user.as_bytes());
-    m.update(&[0]);
-    m.update(&expiry.to_be_bytes());
-    m.verify_slice(&mac).is_ok()
+    let Ok(mac) = hex::decode(&key[16..]) else { return Ok(false) };
+    let gen = key_gen(db, user)?;
+    Ok(key_hmac(db, record_id, user, expiry, gen).verify_slice(&mac).is_ok())
 }
 
 /// Access levels: "00".."99" (numbers 0..99 accepted) or "**".

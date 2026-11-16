@@ -67,7 +67,7 @@ events that commit together). Column families:
 | `unq` | unique_id | record_id |
 | `usr` | `u`+user_id / `n`+username, and saved sessions | user row / user_id |
 | `key` | `h`+sha256(agent key) / `u`+user_id+`\0`+key_id | agent key row / empty |
-| `acc` | `r`+record+`\0`+user and `u`+user+`\0`+record | grant row (granted by, can regrant) |
+| `acc` | `r`+record+`\0`+user, `u`+user+`\0`+record, `g`+user | grant row (granted by, can regrant); `g`+user = private access key generation (8 bytes) |
 | `sub` | `t`+target+`\0`+subscriber and `s`+subscriber+`\0`+target | options, blocked |
 | `feed` | subscriber+`\0`+record_id | empty |
 | `ntf` | subscriber+`\0`+seq (8 bytes, big-endian) | notification JSON + created time |
@@ -367,7 +367,10 @@ that name must meet the condition). A user must be able to read a record to refe
 server secret in `meta`. A key expires after `private_key_ttl` (default `1h`). `requestPrivateRecordAccessKey`
 gives one to a user who can read the record now, or who can read a record that references it.
 `ddbd admin secret rotate` makes a new secret, which cancels every private access key at once; sessions
-and agent keys are not affected.
+and agent keys are not affected. Each user also has a key generation (`acc` row `g user`, absent = 0); when it
+is above 0 it is added to the HMAC as `\0 generation`. `removePrivateRecordAccess` moves the generation of every
+user it removes, which cancels every key that user was given before, including keys obtained through
+`reference_id`; without it a key asked for while granted kept opening the record until it expired.
 
 **Grants.** At most 100 users per call. Only the uploader can grant, unless `allow_granted_to_grant_others`
 is set.

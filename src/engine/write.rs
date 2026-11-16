@@ -1093,6 +1093,8 @@ pub fn grant(db: &Db, c: &Caller, body: &Value, add: bool) -> ApiResult<Value> {
             for k in grantee_keys(&id, &m, &u) {
                 b.delete(CF_IX, &k);
             }
+            // a private access key the user asked for while granted must stop working too
+            access::bump_key_gen(db, &mut b, &u)?;
             changed.push(u);
         }
     }
@@ -1141,6 +1143,6 @@ pub fn request_private_key(db: &Db, c: &Caller, body: &Value) -> ApiResult<Value
     if !ok {
         return Err(ApiError::denied(format!("You have no access to record {id}.")));
     }
-    let (key, expiry) = access::make_private_key(db, id, &c.user_id);
+    let (key, expiry) = access::make_private_key(db, id, &c.user_id)?;
     Ok(json!({"record_id": id, "private_key": key, "expires": expiry}))
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ddbd"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "DDBD: a lightweight schemaless record database server"
 license = "Apache-2.0"

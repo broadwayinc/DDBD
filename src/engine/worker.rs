@@ -363,8 +363,9 @@ fn remove_user_page(db: &Db, k: &[u8], user: &str) -> ApiResult<bool> {
         b.delete(CF_ACC, &access::acc_user_key(user, &rid));
         b.commit()?;
     }
-    // subscriptions both ways
+    // subscriptions both ways (and the user's private access key generation)
     let mut b = Batch::new(&db.store);
+    b.delete(CF_ACC, &access::key_gen_key(user));
     for (tag, other_is_target) in [(b's', true), (b't', false)] {
         let mut p = vec![tag];
         push_comp(&mut p, user);
